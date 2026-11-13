@@ -59,6 +59,10 @@ p{margin:0}
 /* escena animada */
 .escena-caja{position:relative;border-radius:18px;overflow:hidden;border:1px solid var(--linea);background:#070b16}
 canvas.escena{display:block;width:100%;height:clamp(230px,40vh,400px)}
+.titulo-vivo .palabra{display:inline-block;white-space:nowrap;animation:none}
+.titulo-vivo .palabra span{display:inline-block;animation:letra .8s cubic-bezier(.2,1.3,.4,1) both,brilloLetra 4s ease-in-out infinite;animation-delay:calc(var(--i)*45ms),calc(1s + var(--i)*90ms)}
+@keyframes letra{0%{opacity:0;transform:translateY(26px) rotate(8deg)}100%{opacity:1;transform:none}}
+@keyframes brilloLetra{0%,70%,100%{text-shadow:0 0 0 transparent}80%{text-shadow:0 0 18px #ffd166,0 0 4px #fff;color:#fff6dc}}
 .escena-caja.alta canvas.escena{height:clamp(300px,52vh,520px)}
 .sobre{position:absolute;inset:auto 0 0 0;padding:16px;display:flex;flex-direction:column;gap:10px;background:linear-gradient(transparent,#070b16ee 40%)}
 .sobre-arriba{position:absolute;inset:0 0 auto 0;padding:16px 18px;display:flex;flex-direction:column;gap:6px;pointer-events:none}
@@ -489,11 +493,49 @@ const Escena = {
   conectar(cv, op={}){
     prepararSprites();
     this.cv = cv; this.ctx = cv.getContext("2d"); this.modo = op.modo || "vuelo";
+    this.w = this.h = 0; // obliga a medir el lienzo nuevo (si no, se queda en 300x150 y se ve estirado)
+    this.portada = !!op.portada; this.salto = null; this.mx = this.my = this.mxT = this.myT = 0;
+    if (this.portada){
+      if (!reduceMov){ op.desde = 170; } // entrada de cine: la cámara baja desde el cielo hasta la rampa
+      cv.style.cursor = "pointer";
+      cv.addEventListener("pointermove", e => { const r = cv.getBoundingClientRect(); this.mxT = (e.clientX - r.left)/r.width*2 - 1; this.myT = (e.clientY - r.top)/r.height*2 - 1; });
+      cv.addEventListener("pointerleave", () => { this.mxT = this.myT = 0; });
+      cv.addEventListener("pointerdown", () => this.miniDespegue());
+    }
     if (op.alt !== undefined){ this.cam = op.desde ?? op.alt; this.obj = op.alt; }
     this.viaje = op.viaje || null; this.t0 = performance.now(); this.parts = []; this.ondas = [];
     if (!this.raf){ this.ult = performance.now(); this.raf = requestAnimationFrame(this.bucle); }
   },
   subir(a){ this.obj = Math.min(LUNA, a); this.sacudida = .5; },
+  miniDespegue(){
+    if (this.salto || reduceMov || Math.abs(this.cam - this.obj) > 3) return;
+    this.salto = {t:0}; this.sacudida = .7;
+    const x = this.w/2, y = this.ySuelo || this.h*.8;
+    this.ondas.push({x, y:y-4, r:8, a:1, col:"#ffb347"}, {x, y:y-4, r:2, a:.8, col:"#ffffff"});
+    for (let i=0;i<70;i++){ const a = Math.PI + Math.random()*Math.PI, v = 90+Math.random()*260; this.parts.push({x:x+(Math.random()-.5)*20, y:y-6, vx:Math.cos(a)*v, vy:Math.sin(a)*v*.35, v:0, max:.8+Math.random()*.9, col:["#ffd166","#ff7a3d","#ffffff"][i%3], tam:1.5+Math.random()*3, tipo:"chispa"}); }
+  },
+  aurora(ctx, a){
+    const W = this.w, H = this.h; ctx.save(); ctx.globalCompositeOperation = "lighter";
+    ["94,224,193","127,178,255","197,139,255"].forEach((col, b) => {
+      const y0 = H*(.1 + b*.07), paso = (W+80)/28; ctx.beginPath(); ctx.moveTo(-40, y0);
+      for (let x=-40; x<=W+41; x+=paso) ctx.lineTo(x, y0 + Math.sin(x/W*6 + this.t*(.35+b*.12) + b*2)*H*.045 + Math.sin(x/W*13 - this.t*.6)*H*.015);
+      for (let x=W+40; x>=-41; x-=paso) ctx.lineTo(x, y0 + H*.17 + Math.sin(x/W*5 + this.t*(.28+b*.1) + b)*H*.05);
+      ctx.closePath();
+      const g = ctx.createLinearGradient(0, y0 - H*.05, 0, y0 + H*.22); g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(.3, `rgba(${col},${.2*a})`); g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g; ctx.fill();
+    });
+    ctx.restore();
+  },
+  focos(ctx, ySuelo){
+    const W = this.w, H = this.h; ctx.save(); ctx.globalCompositeOperation = "lighter";
+    for (const [x0, fase] of [[W*.16, 0], [W*.84, 2.4]]){
+      const ang = -Math.PI/2 + Math.sin(this.t*.42 + fase)*.6, L = H*1.4, an = .085;
+      const g = ctx.createLinearGradient(x0, ySuelo, x0 + Math.cos(ang)*L, ySuelo + Math.sin(ang)*L); g.addColorStop(0, "rgba(255,236,190,.32)"); g.addColorStop(1, "rgba(255,236,190,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(x0, ySuelo); ctx.lineTo(x0 + Math.cos(ang-an)*L, ySuelo + Math.sin(ang-an)*L); ctx.lineTo(x0 + Math.cos(ang+an)*L, ySuelo + Math.sin(ang+an)*L); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = .9; ctx.drawImage(SPR.brillo, x0-14, ySuelo-16, 28, 28); ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  },
   rafaga(color, n=50){
     if (reduceMov) return; const c = this.cohetePos();
     this.ondas.push({x:c.x, y:c.y, r:10, a:1, col:color});
@@ -647,25 +689,34 @@ const Escena = {
     ctx.globalAlpha = 1; ctx.lineWidth = 1; this.ondas = this.ondas.filter(o => o.a > 0);
   },
   dibujaVuelo(ctx, dt){
-    const W = this.w, H = this.h, pxm = H/115, k = Math.min(1, this.cam/140), espera = this.modo === "espera";
+    const P = this.portada, W = this.w, H = this.h, pxm = H/115, k = P ? Math.max(.6, Math.min(1, this.cam/140)) : Math.min(1, this.cam/140), espera = this.modo === "espera";
     const sx = reduceMov ? 0 : (Math.random()-.5)*this.sacudida*6, sy = reduceMov ? 0 : (Math.random()-.5)*this.sacudida*6;
+    this.mx += (this.mxT - this.mx)*Math.min(1, dt*3); this.my += (this.myT - this.my)*Math.min(1, dt*3);
     ctx.save(); ctx.translate(sx, sy);
     this.cielo(ctx, k);
+    if (P){ ctx.save(); ctx.translate(-this.mx*18, -this.my*10); }
     this.nebulosa(ctx, this.cam*pxm, k*.9);
     this.estrellas(ctx, this.cam*pxm*.8, .15 + k*.85);
-    this.estrellasFugaces(ctx, dt, k);
+    this.estrellasFugaces(ctx, dt, P ? 1 : k);
+    if (P){ this.aurora(ctx, 1); this.luna(ctx, W*.8, H*.19, Math.min(W,H)*.075); ctx.restore(); ctx.save(); ctx.translate(-this.mx*7, -this.my*4); }
     const lk = Math.max(0, (this.cam-260)/440);
     if (lk > 0) this.luna(ctx, W*.72, H*.2 - (1-lk)*30, 14 + lk*lk*W*.3);
     const c = this.cohetePos();
     ctx.font = "600 10.5px Unbounded, sans-serif"; ctx.textBaseline = "bottom";
-    for (const [alt, txt] of HITOS){
+    if (!P) for (const [alt, txt] of HITOS){
       const y = c.y - (alt - this.cam)*pxm*2.2; if (y < 14 || y > H-10) continue;
       const g = ctx.createLinearGradient(0,0,W,0); g.addColorStop(0,"rgba(155,168,198,.5)"); g.addColorStop(1,"rgba(155,168,198,0)");
       ctx.strokeStyle = g; ctx.setLineDash([4,6]); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = "rgba(220,228,245,.85)"; ctx.fillText(`${txt.toUpperCase()} · ${alt} M`, 12, y-4);
     }
-    const ySuelo = c.y + 36 + this.cam*pxm*1.4;
+    const ySuelo = c.y + 36 + this.cam*pxm*1.4; this.ySuelo = ySuelo;
+    if (P) this.focos(ctx, ySuelo);
     this.tierra(ctx, ySuelo);
+    if (P && ySuelo < H+40){ // brillo de la rampa que late
+      ctx.save(); ctx.globalCompositeOperation = "lighter"; const pr = W*.22*(1 + Math.sin(this.t*2.4)*.08);
+      const g = ctx.createRadialGradient(W/2, ySuelo, 0, W/2, ySuelo, pr); g.addColorStop(0, "rgba(255,150,70,.45)"); g.addColorStop(1, "rgba(255,150,70,0)");
+      ctx.fillStyle = g; ctx.fillRect(W/2-pr, ySuelo-pr, pr*2, pr*2); ctx.restore();
+    }
     if (ySuelo < H+40){
       ctx.fillStyle = "#1f273d"; ctx.fillRect(W/2-58, ySuelo-7, 116, 9); ctx.fillStyle = "#39445f"; ctx.fillRect(W/2-58, ySuelo-7, 116, 3);
       ctx.fillStyle = "#4a5675"; ctx.fillRect(W/2+34, ySuelo-82, 7, 76); for (let yy=ySuelo-80; yy<ySuelo-8; yy+=10){ ctx.fillRect(W/2+28, yy, 19, 2); }
@@ -674,9 +725,12 @@ const Escena = {
     // nubes por detrás del cohete
     for (const n of this.nubes){ n.x += n.v*dt; if (n.x < -.3) n.x = 1.3; if (n.x > 1.3) n.x = -.3;
       const y = c.y - (n.alt - this.cam)*pxm*2.2; if (!n.delante && y > -80 && y < H+80) this.nube(ctx, n.x*W, y, n.s*Math.max(.7,W/600), (1-k)*.6); }
-    const empuje = espera ? 0 : Math.min(1, Math.max(.18, (this.obj-this.cam)/22));
+    let empuje = espera ? 0 : Math.min(1, Math.max(.18, (this.obj-this.cam)/22)), salto = 0;
+    if (this.salto){ this.salto.t += dt; const f = this.salto.t/1.7;
+      if (f >= 1){ this.salto = null; this.sacudida = .45; this.ondas.push({x:W/2, y:ySuelo-4, r:6, a:.9, col:"#ffd166"}); }
+      else { salto = Math.sin(Math.PI*f)*H*.34; empuje = f < .55 ? 1 : .45; } }
     const esc = Math.min(1.3, Math.max(.8, H/320));
-    const yC = espera ? ySuelo - 33*esc - 6 + Math.sin(this.t*2)*1 : c.y;
+    const yC = (espera ? ySuelo - 33*esc - 6 + Math.sin(this.t*2)*1 : c.y) - salto;
     this.satelite(ctx, c.x, yC, esc, false);
     (this.rivales || []).forEach((r, j) => {
       const vis = this.visRiv[r.id] = this.visRiv[r.id] === undefined ? r.alt : this.visRiv[r.id] + (r.alt - this.visRiv[r.id]) * Math.min(1, dt*1.5);
@@ -690,12 +744,20 @@ const Escena = {
       ctx.strokeStyle = r.col; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1;
       ctx.fillStyle = r.col; ctx.fillText(et, lx, ey + 1); ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
     });
-    this.particulas(ctx, dt, c.x, yC + 34*esc, empuje, this.vel*pxm*.6, espera);
-    this.dibujaCohete(ctx, c.x, yC, esc, espera ? .06 + Math.max(0,Math.sin(this.t*1.5))*.1 : empuje, datos.perfil && datos.perfil.b);
+    this.particulas(ctx, dt, c.x, yC + 34*esc, empuje, this.vel*pxm*.6, espera && !salto);
+    this.dibujaCohete(ctx, c.x, yC, esc, espera && !salto ? .06 + Math.max(0,Math.sin(this.t*1.5))*.1 : empuje, datos.perfil && datos.perfil.b);
     this.satelite(ctx, c.x, yC, esc, true);
     for (const n of this.nubes){ const y = c.y - (n.alt - this.cam)*pxm*2.2; if (n.delante && y > -80 && y < H+80) this.nube(ctx, n.x*W, y, n.s*1.2*Math.max(.7,W/600), (1-k)*.4); }
     this.ondasExpansivas(ctx, dt);
+    if (P) ctx.restore();
     ctx.restore();
+    if (P){ // en la portada no hay marcador de altura: solo una pista para tocar el cohete
+      if (Math.abs(this.cam - this.obj) < 3 && !this.salto){
+        ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.font = "700 11px Unbounded, sans-serif";
+        ctx.fillStyle = `rgba(242,233,201,${.45 + Math.sin(this.t*2.5)*.25})`; ctx.fillText("TOCA EL COHETE", W/2, H - 12); ctx.textAlign = "left";
+      }
+      return;
+    }
     // indicador de altura
     ctx.textBaseline = "top"; ctx.textAlign = "right";
     ctx.font = "800 28px Unbounded, sans-serif"; ctx.fillStyle = "#eef1f8"; ctx.shadowColor = "rgba(0,0,0,.5)"; ctx.shadowBlur = 8;
@@ -1118,7 +1180,7 @@ function vistaInicio(){
     <div class="sobre-arriba"><span class="etiqueta">Reto del día · #${n} · ${faseLunar()}</span></div>
   </div>
   <section class="tarjeta pila">
-      <h1>Rumbo a la Luna</h1>
+      <h1 class="titulo-vivo" aria-label="Rumbo a la Luna">${(() => { let i = 0; return "Rumbo a la Luna".split(" ").map(w => `<span class="palabra" aria-hidden="true">${[...w].map(l => `<span style="--i:${i++}">${l}</span>`).join("")}</span>`).join(" "); })()}</h1>
       <p class="suave">7 preguntas, 25 segundos cada una. Las respuestas raras suben más alto.</p>
       <p class="objetivo">Objetivo: la Luna, a 700 m</p>
       ${hecho ? `<div class="fila"><button class="btn" id="ver">Ver mi ascenso de hoy (${hecho.total} m)</button><button class="btn sec" data-ir="retos">Ir a los retos</button></div>`
@@ -1136,7 +1198,7 @@ function vistaInicio(){
     <div class="barra-prog"><i style="width:${jugados/RETOS.length*100}%"></i></div>
     <div class="fila"><button class="btn sec" data-ir="duelo">Duelos en directo: 1 vs 1 y 2 vs 2</button><button class="btn sec" data-ir="retos">Retos de respuestas raras (${RETOS.length})</button><button class="btn sec" data-ir="estudio">Retos de estudio tipo test (${RETOS_TEST.length})</button><button class="btn sec" data-ir="retos">🎮 Retos gamer (${RETOS_GAMER.length} + ${RETOS_TEST_GAMER.length} de estudio)</button><button class="btn sec" data-ir="ranking">🏆 Clasificación</button></div>
   </section>`);
-  Escena.conectar(document.getElementById("cv"), {modo:"espera", alt:0});
+  Escena.conectar(document.getElementById("cv"), {modo:"espera", alt:0, portada:true});
   const e = document.getElementById("empezar"); if (e) e.onclick = () => jugar(n, true);
   const v = document.getElementById("ver"); if (v) v.onclick = () => resultados(n, hecho, false, true);
 }
