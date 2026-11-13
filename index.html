@@ -6,6 +6,7 @@
 <title>Lunática</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;800&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -648,7 +649,7 @@ function estadoOnline(){
   const el = document.getElementById("online"); if (!el) return;
   const n = ONLINE.jugadores.size;
   el.className = "online " + ONLINE.estado;
-  el.textContent = ONLINE.estado === "si" ? `En línea · ${n} ${n===1?"jugador":"jugadores"}` : ONLINE.estado === "conectando" ? "Conectando…" : window.Peer && !window.claude ? "Duelos online" : "Modo local";
+  el.textContent = ONLINE.estado === "si" ? `En línea · ${n} ${n===1?"jugador":"jugadores"}` : ONLINE.estado === "conectando" ? "Conectando…" : (window.mqtt || window.Peer) && !window.claude ? "Duelos online" : "Modo local";
   el.title = ONLINE.estado === "si" ? "Tus resultados se comparten con el resto de jugadores" : "Tus resultados se guardan solo en este navegador";
 }
 async function nombres(ids){
@@ -1061,10 +1062,62 @@ function salaP2P(nombre){
   });
 }
 
+/* Salas por un servidor público de mensajes (MQTT sobre WebSocket por el puerto 443).
+   Cada jugador anuncia su estado cada pocos segundos; quien deja de anunciarse sale de la sala. */
+function salaMQTT(nombre){
+  return new Promise((resolver, rechazar) => {
+    const base = "lunatica/v2/" + nombre, yoId = Math.random().toString(36).slice(2, 12);
+    const st = {peers:new Map(), cbs:new Set(), snap:Object.freeze([]), listo:false, pres:{}, timers:[], pend:false};
+    const temaYo = base + "/p/" + yoId;
+    let cli;
+    try {
+      cli = mqtt.connect("wss://public.cloud.shiftr.io", {username:"public", password:"public", clientId:"lunatica-" + yoId, keepalive:30, reconnectPeriod:2000, connectTimeout:8000, clean:true,
+        will:{topic:temaYo, payload:JSON.stringify({bye:true}), qos:0, retain:false}});
+    } catch(e){ return rechazar({code:"upstream_error"}); }
+    const emitir = () => {
+      if (st.pend) return; st.pend = true;
+      requestAnimationFrame(() => { st.pend = false;
+        st.snap = Object.freeze([...st.peers.values()].map(p => Object.freeze({peer:p.peer, presence:p.presence, kind:"viewer", sameTab:p.peer === yoId, isMe:p.peer === yoId})));
+        st.cbs.forEach(f => { try { f({peers:st.snap}); } catch(e){} }); });
+    };
+    const anunciar = () => { if (cli && cli.connected) cli.publish(temaYo, JSON.stringify({p:st.pres, t:Date.now()})); };
+    const api = {
+      presence: async patch => {
+        for (const k in patch) patch[k] === null ? delete st.pres[k] : st.pres[k] = patch[k];
+        st.peers.set(yoId, {peer:yoId, presence:{...st.pres}, visto:Date.now()}); emitir(); anunciar();
+      },
+      peers: () => st.snap,
+      onPeers: f => { st.cbs.add(f); return () => st.cbs.delete(f); },
+      leave: async () => { st.timers.forEach(clearInterval); try { cli.publish(temaYo, JSON.stringify({bye:true})); cli.end(false); } catch(e){} st.cbs.clear(); }
+    };
+    cli.on("message", (tema, msg) => {
+      const id = tema.slice((base + "/p/").length); if (!id || id === yoId) return;
+      let d; try { d = JSON.parse(msg.toString()); } catch(e){ return; }
+      if (d && d.bye){ if (st.peers.delete(id)) emitir(); return; }
+      if (d && d.p && typeof d.p === "object"){ const nuevo = !st.peers.has(id); st.peers.set(id, {peer:id, presence:d.p, visto:Date.now()}); emitir(); if (nuevo) anunciar(); }
+    });
+    const tiempo = setTimeout(() => { if (!st.listo){ try { cli.end(true); } catch(e){} rechazar({code:"upstream_error"}); } }, 10000);
+    cli.on("connect", () => {
+      cli.subscribe(base + "/p/+", err => {
+        if (err){ if (!st.listo){ clearTimeout(tiempo); rechazar({code:"upstream_error"}); } return; }
+        anunciar();
+        if (!st.listo){
+          st.listo = true; clearTimeout(tiempo);
+          st.timers.push(setInterval(anunciar, 2500));
+          st.timers.push(setInterval(() => { const ahora = Date.now(); let cambio = false; for (const [id,p] of st.peers) if (id !== yoId && ahora - p.visto > 9000){ st.peers.delete(id); cambio = true; } if (cambio) emitir(); }, 2000));
+          resolver(api);
+        }
+      });
+    });
+    cli.on("error", () => {});
+  });
+}
+
 async function obtenerRoom(){
   let r = null;
   try { r = window.claude && window.claude.use ? await window.claude.use("room") : null; } catch(e){}
   if (r) return r;
+  if (window.mqtt) return {join: async nombre => { try { return await salaMQTT(nombre); } catch(e){ if (window.Peer) return await salaP2P(nombre); throw e; } }};
   if (window.Peer) return {join: nombre => salaP2P(nombre)};
   return null;
 }
